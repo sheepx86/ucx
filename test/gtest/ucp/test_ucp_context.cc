@@ -755,3 +755,41 @@ UCS_TEST_P(test_ucp_devices_config_mlx5, range_negate_multiple)
 }
 
 UCP_INSTANTIATE_TEST_CASE_TLS(test_ucp_devices_config_mlx5, ib, "ib")
+
+class test_ucp_net_devices_map : public ucp_test {
+public:
+    static void get_test_variants(std::vector<ucp_test_variant> &variants) {
+        add_variant(variants, UCP_FEATURE_TAG);
+    }
+};
+
+UCS_TEST_P(test_ucp_net_devices_map, basic_mapping) {
+    modify_config("NET_DEVICES_MAP", "mlx5_0,mlx5_1");
+
+    // Set rank to 0
+    modify_config("NODE_LOCAL_ID", "0");
+    {
+        entity *e0 = create_entity();
+        EXPECT_EQ("mlx5_0", std::string(e0->ucph()->config.mapped_net_device));
+    }
+    m_entities.clear();
+
+    // Set rank to 1
+    modify_config("NODE_LOCAL_ID", "1");
+    {
+        entity *e1 = create_entity();
+        EXPECT_EQ("mlx5_1", std::string(e1->ucph()->config.mapped_net_device));
+    }
+    m_entities.clear();
+
+    // Set rank to 2 (should wrap around to mlx5_0)
+    modify_config("NODE_LOCAL_ID", "2");
+    {
+        entity *e2 = create_entity();
+        EXPECT_EQ("mlx5_0", std::string(e2->ucph()->config.mapped_net_device));
+    }
+    m_entities.clear();
+}
+
+UCP_INSTANTIATE_TEST_CASE_TLS(test_ucp_net_devices_map, all, "all")
+

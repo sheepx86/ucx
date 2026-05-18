@@ -255,6 +255,8 @@ typedef struct ucp_context_config {
     unsigned long                          max_hca_per_gpu;
     /** Local identificator on a single node */
     unsigned long                          node_local_id;
+    /** Network devices map by node local id */
+    char                                   *net_devices_map;
 } ucp_context_config_t;
 
 
@@ -458,6 +460,9 @@ typedef struct ucp_context {
 
         /* Local identificator on a single node */
         unsigned long             node_local_id;
+
+        /* Selected mapped network device name */
+        char                      mapped_net_device[UCT_DEVICE_NAME_MAX];
 
         struct {
             size_t                         size;    /* Request size for user */

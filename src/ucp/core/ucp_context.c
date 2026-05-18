@@ -614,6 +614,11 @@ static ucs_config_field_t ucp_context_config_table[] = {
    "resulting performance.",
    ucs_offsetof(ucp_context_config_t, node_local_id), UCS_CONFIG_TYPE_ULUNITS},
 
+  {"NET_DEVICES_MAP", "",
+   "Comma-separated list of network devices. The process selects its network device\n"
+   "from this list using its local rank/id (node_local_id).",
+   ucs_offsetof(ucp_context_config_t, net_devices_map), UCS_CONFIG_TYPE_STRING},
+
   {NULL}
 };
 
@@ -1251,13 +1256,28 @@ ucp_is_resource_in_transports_list(const char *tl_name,
     return 1;
 }
 
-static int ucp_is_resource_enabled(const uct_tl_resource_desc_t *resource,
+static int ucp_is_resource_enabled(ucp_context_h context,
+                                   const uct_tl_resource_desc_t *resource,
                                    const ucp_config_t *config,
                                    const ucs_string_set_t *aux_tls,
                                    uint8_t *rsc_flags, uint64_t dev_cfg_masks[],
                                    uint64_t *tl_cfg_mask)
 {
     int device_enabled, tl_enabled;
+
+    if ((resource->dev_type == UCT_DEVICE_TYPE_NET) &&
+        !ucs_string_is_empty(context->config.mapped_net_device)) {
+        char dev_basename[UCT_DEVICE_NAME_MAX];
+        ucp_get_dev_basename(resource->dev_name, dev_basename, sizeof(dev_basename));
+        if (ucs_string_is_empty(dev_basename)) {
+            ucs_strncpy_zero(dev_basename, resource->dev_name, sizeof(dev_basename));
+        }
+        if (strcmp(dev_basename, context->config.mapped_net_device) != 0) {
+            ucs_trace(UCT_TL_RESOURCE_DESC_FMT " is mapped out (selected device: %s)",
+                      UCT_TL_RESOURCE_DESC_ARG(resource), context->config.mapped_net_device);
+            return 0;
+        }
+    }
 
     /* Find the enabled devices */
     device_enabled = ucp_is_resource_in_device_list(
@@ -1294,7 +1314,7 @@ static void ucp_add_tl_resource_if_enabled(
     uint8_t rsc_flags;
     ucp_rsc_index_t dev_index, i;
 
-    if (ucp_is_resource_enabled(resource, config, aux_tls, &rsc_flags,
+    if (ucp_is_resource_enabled(context, resource, config, aux_tls, &rsc_flags,
                                 dev_cfg_masks, tl_cfg_mask)) {
         if ((resource->sys_device != UCS_SYS_DEVICE_ID_UNKNOWN) &&
             (resource->sys_device >= UCP_MAX_SYS_DEVICES)) {
@@ -2404,6 +2424,40 @@ static ucs_status_t ucp_fill_config(ucp_context_h context,
         context->config.node_local_id = context->config.ext.node_local_id;
     }
     ucs_debug("node local id is %lu", context->config.node_local_id);
+
+    context->config.mapped_net_device[0] = '\0';
+    if (!ucs_string_is_empty(context->config.ext.net_devices_map)) {
+        char *map_copy = ucs_strdup(context->config.ext.net_devices_map, "net_devices_map_copy");
+        if (map_copy != NULL) {
+            char *token, *saveptr;
+            char **dev_names = NULL;
+            unsigned num_devs = 0;
+            unsigned long rank;
+            const char *mapped_name;
+            unsigned j;
+
+            token = strtok_r(map_copy, ",", &saveptr);
+            while (token != NULL) {
+                dev_names = ucs_realloc(dev_names, sizeof(char*) * (num_devs + 1), "net_dev_names");
+                dev_names[num_devs++] = ucs_strdup(token, "net_dev_name");
+                token = strtok_r(NULL, ",", &saveptr);
+            }
+            ucs_free(map_copy);
+            if (num_devs > 0) {
+                rank = context->config.node_local_id;
+                if (rank == UCS_ULUNITS_AUTO) {
+                    rank = 0;
+                }
+                mapped_name = dev_names[rank % num_devs];
+                ucs_strncpy_zero(context->config.mapped_net_device, mapped_name,
+                                 sizeof(context->config.mapped_net_device));
+            }
+            for (j = 0; j < num_devs; ++j) {
+                ucs_free(dev_names[j]);
+            }
+            ucs_free(dev_names);
+        }
+    }
 
     if (UCS_CONFIG_DBL_IS_AUTO(context->config.ext.bcopy_bw)) {
         /* bcopy_bw wasn't set via the env variable. Calculate the value */
