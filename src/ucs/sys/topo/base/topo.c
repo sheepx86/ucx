@@ -187,8 +187,26 @@ ucs_status_t ucs_topo_get_distance(ucs_sys_device_t device1,
                                    ucs_sys_dev_distance_t *distance)
 {
     const ucs_sys_topo_provider_t *provider = ucs_sys_topo_get_provider();
+    ucs_status_t status;
+    const char *name1;
+    const char *name2;
+    int gpu_idx, nic_idx;
 
-    return provider->ops.get_distance(device1, device2, distance);
+    status = provider->ops.get_distance(device1, device2, distance);
+    if (status != UCS_OK) {
+        return status;
+    }
+
+    name1 = ucs_topo_sys_device_get_name(device1);
+    name2 = ucs_topo_sys_device_get_name(device2);
+    if (((sscanf(name1, "GPU%d", &gpu_idx) == 1) && (sscanf(name2, "mlx5_%d", &nic_idx) == 1)) ||
+        ((sscanf(name2, "GPU%d", &gpu_idx) == 1) && (sscanf(name1, "mlx5_%d", &nic_idx) == 1))) {
+        if (gpu_idx != nic_idx) {
+            distance->latency += 1e-8; /* Add 0.01 us extra latency for remote NIC */
+        }
+    }
+
+    return UCS_OK;
 }
 
 void ucs_topo_get_memory_distance(ucs_sys_device_t device,

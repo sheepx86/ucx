@@ -2735,11 +2735,16 @@ ucp_wireup_construct_lanes(const ucp_wireup_select_params_t *select_params,
             ((lane + first_am_bw_lane) < UCP_MAX_LANES)) {
             key->am_bw_lanes[lane + first_am_bw_lane] = lane;
         }
-        if (select_ctx->lane_descs[lane].lane_types & UCS_BIT(UCP_LANE_TYPE_RMA)) {
-            key->rma_lanes[lane] = lane;
-        }
         if (select_ctx->lane_descs[lane].lane_types & UCS_BIT(UCP_LANE_TYPE_RMA_BW)) {
             key->rma_bw_lanes[lane] = lane;
+            /* Any high-bandwidth RMA lane is also a valid basic RMA lane */
+            select_ctx->lane_descs[lane].lane_types |= UCS_BIT(UCP_LANE_TYPE_RMA);
+            /* Copy high-bandwidth score to basic score so they are compared properly */
+            select_ctx->lane_descs[lane].score[UCP_LANE_TYPE_RMA] =
+                select_ctx->lane_descs[lane].score[UCP_LANE_TYPE_RMA_BW];
+        }
+        if (select_ctx->lane_descs[lane].lane_types & UCS_BIT(UCP_LANE_TYPE_RMA)) {
+            key->rma_lanes[lane] = lane;
         }
         if (select_ctx->lane_descs[lane].lane_types & UCS_BIT(UCP_LANE_TYPE_RKEY_PTR)) {
             ucs_assert(key->rkey_ptr_lane == UCP_NULL_LANE);

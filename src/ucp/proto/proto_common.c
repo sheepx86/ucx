@@ -13,6 +13,7 @@
 
 #include <ucp/am/ucp_am.inl>
 #include <ucp/wireup/wireup.h>
+#include <ucs/algorithm/qsort_r.h>
 #include <uct/api/v2/uct_v2.h>
 
 
@@ -557,6 +558,55 @@ ucp_proto_common_filter_min_frag(const ucp_proto_init_params_t *params,
     return 1;
 }
 
+static int ucp_proto_common_compare_lanes_dynamic(const void *elem1, const void *elem2,
+                                                  void *arg)
+{
+    const ucp_lane_index_t *lane1_p = elem1;
+    const ucp_lane_index_t *lane2_p = elem2;
+    const ucp_proto_init_params_t *params = arg;
+    ucp_context_h context = params->worker->context;
+    const ucp_ep_config_key_t *ep_config_key = params->ep_config_key;
+    ucs_sys_device_t target_gpu = UCS_SYS_DEVICE_ID_UNKNOWN;
+
+    ucp_lane_index_t lane1 = *lane1_p;
+    ucp_lane_index_t lane2 = *lane2_p;
+    double lat1, lat2;
+    ucp_rsc_index_t rsc_idx1, rsc_idx2;
+    const char *name1, *name2;
+    int nic_idx1, nic_idx2;
+
+    if (params->rkey_config_key != NULL) {
+        target_gpu = params->rkey_config_key->sys_dev;
+    } else if (params->select_param != NULL) {
+        target_gpu = params->select_param->sys_dev;
+    }
+
+    rsc_idx1 = ep_config_key->lanes[lane1].rsc_index;
+    rsc_idx2 = ep_config_key->lanes[lane2].rsc_index;
+
+    lat1 = ucp_worker_iface(params->worker, rsc_idx1)->attr.latency.c;
+    lat2 = ucp_worker_iface(params->worker, rsc_idx2)->attr.latency.c;
+
+    name1 = context->tl_rscs[rsc_idx1].tl_rsc.dev_name;
+    name2 = context->tl_rscs[rsc_idx2].tl_rsc.dev_name;
+
+    /* Check if lane 1 is remote NIC to target GPU */
+    if ((sscanf(name1, "mlx5_%d", &nic_idx1) == 1) && (target_gpu != UCS_SYS_DEVICE_ID_UNKNOWN)) {
+        if (nic_idx1 != (int)target_gpu) {
+            lat1 += 1e-8;
+        }
+    }
+
+    /* Check if lane 2 is remote NIC to target GPU */
+    if ((sscanf(name2, "mlx5_%d", &nic_idx2) == 1) && (target_gpu != UCS_SYS_DEVICE_ID_UNKNOWN)) {
+        if (nic_idx2 != (int)target_gpu) {
+            lat2 += 1e-8;
+        }
+    }
+
+    return ucs_fp_compare(lat1, lat2);
+}
+
 ucp_lane_index_t
 ucp_proto_common_find_lanes(const ucp_proto_init_params_t *params,
                             unsigned flags, ucp_lane_type_t lane_type,
@@ -580,7 +630,10 @@ ucp_proto_common_find_lanes(const ucp_proto_init_params_t *params,
     ucp_md_index_t md_index;
     ucp_lane_map_t lane_map;
     char lane_desc[64];
-    ucs_sys_device_t lane_sys_dev;
+    ucs_sys_device_t lane_sys_dev, target_gpu;
+    ucp_lane_index_t lanes_to_check[UCP_MAX_LANES];
+    unsigned num_lanes_to_check;
+    int i;
 
     if (max_lanes == 0) {
         return 0;
@@ -607,7 +660,25 @@ ucp_proto_common_find_lanes(const ucp_proto_init_params_t *params,
 
     lane_map = UCS_MASK(ep_config_key->num_lanes) & ~exclude_map;
     lane_map &= ~failed_lanes;
+    num_lanes_to_check = 0;
     ucs_for_each_bit(lane, lane_map) {
+        lanes_to_check[num_lanes_to_check++] = lane;
+    }
+
+    target_gpu = UCS_SYS_DEVICE_ID_UNKNOWN;
+    if (rkey_config_key != NULL) {
+        target_gpu = rkey_config_key->sys_dev;
+    } else if (select_param != NULL) {
+        target_gpu = select_param->sys_dev;
+    }
+
+    if (target_gpu != UCS_SYS_DEVICE_ID_UNKNOWN) {
+        ucs_qsort_r(lanes_to_check, num_lanes_to_check, sizeof(ucp_lane_index_t),
+                    ucp_proto_common_compare_lanes_dynamic, (void*)params);
+    }
+
+    for (i = 0; i < num_lanes_to_check; ++i) {
+        lane = lanes_to_check[i];
         if (num_lanes >= max_lanes) {
             break;
         }
